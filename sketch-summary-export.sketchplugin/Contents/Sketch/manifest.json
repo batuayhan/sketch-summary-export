@@ -1,0 +1,30 @@
+{
+  "name": "Summary Export",
+  "identifier": "com.batu.sketch-summary-export",
+  "version": "1.0.0",
+  "description": "Seçili page/frame'in bileşen + layout özet JSON'ını üretir (LLM-dostu, küçük çıktı)",
+  "author": "Batu",
+  "authorEmail": "batuhanayhan98@gmail.com",
+  "compatibleVersion": "3",
+  "bundleVersion": 1,
+  "commands": [
+    {
+      "name": "Copy Summary JSON",
+      "identifier": "copy-summary",
+      "shortcut": "ctrl option cmd j",
+      "script": "summary.js",
+      "handler": "onCopy"
+    },
+    {
+      "name": "Save Summary JSON…",
+      "identifier": "save-summary",
+      "shortcut": "ctrl option cmd shift j",
+      "script": "summary.js",
+      "handler": "onSave"
+    }
+  ],
+  "menu": {
+    "title": "Summary Export",
+    "items": ["copy-summary", "save-summary"]
+  }
+}
