@@ -1,41 +1,44 @@
-/* Summary Export — seçili page/frame'in LLM-dostu özet JSON'ı.
- * Sketch 2025.1 "Athens" ve sonrası (Frames, Stacks, yeni Swatch API) hedeflenir.
+/* Summary Export - LLM-friendly summary JSON of the selected page/frame.
+ * Targets Sketch 2025.1 "Athens" and later (Frames, Stacks, new Swatch API).
  *
- * ÖNEMLİ (CocoaScript uyumu): bu dosyada regex literal'i KULLANMA (/.../ yazımı
- * Sketch'in script ön-işleyicisini sessizce bozabiliyor); tüm require çağrıları
- * handler içinde tutulur ki yükleme anında hiçbir şey patlayamasın.
+ * IMPORTANT (CocoaScript compatibility): this file must stay pure ASCII.
+ * The Sketch script preprocessor tokenizes apostrophes inside comments as
+ * string delimiters, which silently swallows code between them. So: no
+ * regex literals, no template literals, no non-ASCII characters, and no
+ * apostrophes in comments. Keep all require() calls inside handlers so
+ * nothing can fail at load time.
  *
- * Test için: bu dosyanın tamamını Plugins ▸ Run Script… paneline yapıştırıp
- * en alta `onRun()` satırı ekleyerek çalıştırabilirsin — hata varsa orada görünür.
+ * Quick test: paste this whole file into Plugins > Run Script..., append
+ * a line with onRun() at the bottom and run it - errors show in the panel.
  */
 
-var TOL = 3 // px toleransı: geometrik fallback'te overlap / hizalama / gap kontrolleri
+var TOL = 3 // px tolerance for the geometric fallback (overlap/align/gap checks)
 
 function onRun(context) { main(context, 'clipboard') }
 function onSave(context) { main(context, 'file') }
 
 function main(context, dest) {
-  var stage = 'başlangıç'
+  var stage = 'init'
   try {
     log('start dest=' + dest)
 
-    stage = "require('sketch')"
+    stage = 'require sketch'
     var sketch = require('sketch')
     var UI = require('sketch/ui')
 
-    stage = 'doküman'
+    stage = 'document'
     var doc = sketch.getSelectedDocument()
-    if (!doc) { UI.message('Açık doküman yok'); return }
+    if (!doc) { UI.message('No open document'); return }
 
-    stage = 'color variable haritası'
+    stage = 'swatch map'
     var ctx = { doc: doc, swatches: buildSwatchMap(doc) }
 
-    stage = 'seçim'
+    stage = 'selection'
     var targets = doc.selectedLayers ? doc.selectedLayers.layers : []
     if (!targets || targets.length === 0) targets = [doc.selectedPage]
-    log('hedef sayısı=' + targets.length + ' ilk tip=' + (targets[0] ? targets[0].type : '?'))
+    log('targets=' + targets.length + ' first=' + (targets[0] ? targets[0].type : '?'))
 
-    stage = 'özetleme'
+    stage = 'summarize'
     var out = []
     targets.forEach(function (l) {
       var s = summarize(l, ctx)
@@ -43,48 +46,49 @@ function main(context, dest) {
     })
     var result = out.length === 1 ? out[0] : out
     var json = JSON.stringify(result, null, 1)
-    log('json uzunluğu=' + json.length)
+    log('json length=' + json.length)
 
     if (dest === 'file') {
-      stage = 'dosyaya kaydetme'
+      stage = 'save file'
       var panel = NSSavePanel.savePanel()
       panel.setNameFieldStringValue(safeName(targets[0]) + '.summary.json')
       if (panel.runModal() == NSModalResponseOK) {
         NSString.stringWithString(json)
           .writeToFile_atomically_encoding_error(panel.URL().path(), true, NSUTF8StringEncoding, null)
-        UI.message('Kaydedildi: ' + panel.URL().path())
+        UI.message('Saved: ' + panel.URL().path())
       }
     } else {
-      stage = 'panoya kopyalama'
+      stage = 'copy to clipboard'
       var pb = NSPasteboard.generalPasteboard()
       pb.clearContents()
       pb.setString_forType(json, NSPasteboardTypeString)
-      UI.message('Özet JSON panoya kopyalandı — ' + Math.round(json.length / 102.4) / 10 + ' KB')
+      var kb = (json.length / 1024).toFixed(1)
+      UI.message('Summary JSON copied - ' + kb + ' KB')
     }
-    log('bitti')
+    log('done')
   } catch (e) {
     reportError(context, stage, e)
   }
 }
 
-/* Hata asla sessiz kalmasın: UI.alert → NSAlert → showMessage zinciri */
+/* Errors must never be silent: UI.alert -> NSAlert -> showMessage chain */
 function reportError(context, stage, e) {
-  var msg = 'Aşama: ' + stage + '\n' + String(e) + (e && e.stack ? '\n\n' + e.stack : '')
-  log('HATA ' + msg)
+  var msg = 'Stage: ' + stage + '\n' + String(e) + (e && e.stack ? '\n\n' + e.stack : '')
+  log('ERROR ' + msg)
   try {
     var UI = require('sketch/ui')
-    UI.alert('Summary Export hatası', msg)
+    UI.alert('Summary Export error', msg)
     return
   } catch (ignore) {}
   try {
     var alert = NSAlert.alloc().init()
-    alert.setMessageText('Summary Export hatası')
+    alert.setMessageText('Summary Export error')
     alert.setInformativeText(msg)
     alert.runModal()
     return
   } catch (ignore) {}
   try {
-    context.document.showMessage('Summary Export hatası: ' + String(e))
+    context.document.showMessage('Summary Export error: ' + String(e))
   } catch (ignore) {}
 }
 
@@ -98,7 +102,7 @@ function safeName(layer) {
   } catch (e) { return 'summary' }
 }
 
-/* ---------- özetleyiciler ---------- */
+/* ---------- summarizers ---------- */
 
 function summarize(layer, ctx) {
   var node = null
@@ -107,7 +111,7 @@ function summarize(layer, ctx) {
     switch (layer.type) {
       case 'Page':
         return summarizePage(layer, ctx)
-      case 'Artboard': // yeni Sketch'te top-level Frame/Graphic da 'Artboard' döner
+      case 'Artboard': // in new Sketch, top-level Frame/Graphic still reports Artboard
       case 'SymbolMaster':
       case 'Group':
         node = summarizeContainer(layer, ctx)
@@ -126,7 +130,7 @@ function summarize(layer, ctx) {
         node = { type: 'image', name: String(layer.name), frame: frameOf(layer) }
         break
       default:
-        return null // HotSpot, Slice vs.
+        return null // HotSpot, Slice etc.
     }
     if (node) addStackItemInfo(node, layer)
     return node
@@ -167,7 +171,7 @@ function summarizeContainer(layer, ctx) {
   return node
 }
 
-// Gerçek Stack Layout verisi — tahmin yok
+// Real Stack Layout data from the API - no guessing
 function applyStackLayout(node, st, kids) {
   node.layout = String(st.direction) === 'Row' ? 'row' : 'column'
   try { if (typeof st.gap === 'number') node.gap = st.gap } catch (e) {}
@@ -182,7 +186,7 @@ function applyStackLayout(node, st, kids) {
       if (st.alignContent) node.alignContent = cssEnum(st.alignContent)
     }
   } catch (e) {}
-  // çocukları ana eksene göre görsel sıraya diz
+  // order children visually along the main axis
   var pos = node.layout === 'row' ? 'x' : 'y'
   var framed = kids.filter(function (k) { return k.frame })
   var rest = kids.filter(function (k) { return !k.frame })
@@ -204,7 +208,7 @@ function containerKind(layer) {
   return 'group'
 }
 
-// Frame arka planı artık style.fills; legacy Artboard.background fallback
+// Frame background now lives in style.fills; legacy Artboard.background as fallback
 function containerBackground(layer, ctx) {
   try {
     var fills = layer.style && layer.style.fills
@@ -239,11 +243,11 @@ function summarizeInstance(layer, ctx) {
       if (o.property === 'stringValue') {
         ovs[key] = String(o.value); hasOv = true
       } else if (o.property === 'symbolID') {
-        if (!o.value) { ovs[key] = null } // instance içinde gizlenmiş parça
+        if (!o.value) { ovs[key] = null } // part hidden inside the instance
         else {
           var m = null
           try { m = ctx.doc.getSymbolMasterWithID(o.value) } catch (e) {}
-          ovs[key] = m ? '→ ' + String(m.name) : 'swapped'
+          ovs[key] = m ? '-> ' + String(m.name) : 'swapped'
         }
         hasOv = true
       } else if (o.property === 'layerStyle' || o.property === 'textStyle') {
@@ -255,12 +259,12 @@ function summarizeInstance(layer, ctx) {
       } else if (o.property === 'fillColor') {
         ovs[key + ':fill'] = token(o.value, ctx); hasOv = true
       }
-      // image override vb. atlanır — özet için gereksiz
+      // image overrides etc. are skipped - not needed for a summary
     })
   } catch (e) {}
   if (hasOv) node.overrides = ovs
 
-  // instance üstüne uygulanmış tint (yeni API: style.tint bir Fill objesi)
+  // tint applied on the instance (new API: style.tint is a Fill object)
   try {
     if (layer.style && layer.style.tint) node.tint = fillToken(layer.style.tint, ctx)
   } catch (e) {}
@@ -311,7 +315,7 @@ function summarizeShape(layer, ctx) {
   return node
 }
 
-/* ---------- stack item bilgisi (FlexSizing / ignoresStackLayout) ---------- */
+/* ---------- stack item info (FlexSizing / ignoresStackLayout) ---------- */
 
 function addStackItemInfo(node, layer) {
   try {
@@ -326,7 +330,7 @@ function addStackItemInfo(node, layer) {
   try { if (layer.ignoresStackLayout) node.ignoresLayout = true } catch (e) {}
 }
 
-/* ---------- layout çıkarımı: stack olmayan container'lar için fallback ---------- */
+/* ---------- layout inference: fallback for non-Stack containers ---------- */
 
 function attachLayout(node, kids, w, h) {
   node.children = kids
@@ -365,12 +369,12 @@ function attachLayout(node, kids, w, h) {
     node.align = crossAlign(byX, 'y', 'h')
     node.children = reorder(kids, byX)
   } else {
-    node.layout = 'absolute' // üst üste / serbest yerleşim; frame'ler zaten mevcut
+    node.layout = 'absolute' // overlapping / free placement; frames are on every node anyway
   }
-  node.layoutSource = 'inferred' // gerçek Stack değil, geometriden tahmin
+  node.layoutSource = 'inferred' // not a real Stack, inferred from geometry
 }
 
-// sıralı çocuklar ana eksende üst üste binmiyor mu?
+// are the sorted children non-overlapping along the main axis?
 function isStacked(sorted, pos, size) {
   for (var i = 1; i < sorted.length; i++) {
     var prev = sorted[i - 1].frame
@@ -380,7 +384,7 @@ function isStacked(sorted, pos, size) {
   return true
 }
 
-// ardışık boşluklar; hepsi eşitse tek sayı, değilse dizi
+// consecutive gaps; a single number when uniform, otherwise an array
 function gapsOf(sorted, pos, size) {
   var gaps = []
   for (var i = 1; i < sorted.length; i++) {
@@ -394,7 +398,7 @@ function gapsOf(sorted, pos, size) {
   return uniform ? gaps[0] : gaps
 }
 
-// çapraz eksende hizalama: hepsi aynı sol/orta/sağ çizgide mi?
+// cross-axis alignment: do all children share a left/center/right line?
 function crossAlign(sorted, pos, size) {
   var starts = sorted.map(function (k) { return k.frame[pos] })
   var centers = sorted.map(function (k) { return k.frame[pos] + k.frame[size] / 2 })
@@ -417,14 +421,14 @@ function reorder(all, sortedFramed) {
   return sortedFramed.concat(rest)
 }
 
-/* ---------- yardımcılar ---------- */
+/* ---------- helpers ---------- */
 
 function frameOf(layer) {
   var f = layer.frame
   return { x: Math.round(f.x), y: Math.round(f.y), w: Math.round(f.width), h: Math.round(f.height) }
 }
 
-// StackLayout.padding: sayı | {vertical, horizontal} | {top,right,bottom,left} karışımı
+// StackLayout.padding: number | {vertical, horizontal} | {top,right,bottom,left} mix
 function normPadding(p) {
   if (p === null || p === undefined) return undefined
   if (typeof p === 'number') return { top: p, right: p, bottom: p, left: p }
@@ -441,7 +445,7 @@ function normPadding(p) {
   }
 }
 
-// Sketch enum adları → CSS karşılıkları
+// Sketch enum names -> CSS equivalents
 function cssEnum(v) {
   var s = String(v).toLowerCase()
   if (s === 'between') return 'space-between'
@@ -468,7 +472,7 @@ function parseComponentName(name) {
   return { component: base.join(', ').trim(), props: props }
 }
 
-// Yeni corners API'si (style.corners.radii); eski points fallback'i
+// new corners API (style.corners.radii); legacy points fallback
 function cornersOf(layer) {
   try {
     var c = layer.style && layer.style.corners
@@ -494,7 +498,7 @@ function cornersOf(layer) {
   return undefined
 }
 
-// Fill/Border: önce bağlı color variable (swatch), yoksa hex-map, yoksa hex
+// Fill/Border: linked color variable (swatch) first, then hex map, then raw hex
 function fillToken(f, ctx) {
   try {
     if (f.swatch && f.swatch.name) return String(f.swatch.name)
@@ -502,7 +506,7 @@ function fillToken(f, ctx) {
   return token(f.color, ctx)
 }
 
-// dokümandaki color variable'lar (kütüphaneden gelenler dahil) hex -> token adı
+// document color variables (including library ones): hex -> token name
 function buildSwatchMap(doc) {
   var map = {}
   try {
