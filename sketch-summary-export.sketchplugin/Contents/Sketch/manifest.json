@@ -1,19 +1,18 @@
 {
   "name": "Summary Export",
   "identifier": "com.batu.sketch-summary-export",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Seçili page/frame'in bileşen + layout özet JSON'ını üretir (LLM-dostu, küçük çıktı). Sketch 2025.1+ Frames & Stacks destekli.",
   "author": "Batu",
   "authorEmail": "batuhanayhan98@gmail.com",
-  "compatibleVersion": "3",
+  "compatibleVersion": 3,
   "bundleVersion": 1,
   "commands": [
     {
       "name": "Copy Summary JSON",
       "identifier": "copy-summary",
       "shortcut": "ctrl option cmd j",
-      "script": "summary.js",
-      "handler": "onCopy"
+      "script": "summary.js"
     },
     {
       "name": "Save Summary JSON…",

@@ -1,70 +1,101 @@
 /* Summary Export — seçili page/frame'in LLM-dostu özet JSON'ı.
  * Sketch 2025.1 "Athens" ve sonrası (Frames, Stacks, yeni Swatch API) hedeflenir.
  *
- * Ne üretir:
- *  - Symbol instance'lar: bileşen adı, isimden ayrıştırılan proplar (key=value),
- *    default olmayan override'lar (metin, swap, stil), tint. İç yapısına GİRMEZ.
- *  - Container'lar (Frame/Graphic/Group): Stack Layout varsa GERÇEK layout
- *    (direction/gap/padding/align/justify) doğrudan API'den okunur; yoksa
- *    geometriden flexbox çıkarımı yapılır.
- *  - Shape/Text: color token (fill.swatch / textSwatch color variable adı,
- *    yoksa hex), shared style adı, corner radius.
+ * ÖNEMLİ (CocoaScript uyumu): bu dosyada regex literal'i KULLANMA (/.../ yazımı
+ * Sketch'in script ön-işleyicisini sessizce bozabiliyor); tüm require çağrıları
+ * handler içinde tutulur ki yükleme anında hiçbir şey patlayamasın.
  *
- * Kullanım: bir frame seç (ya da hiçbir şey seçme = tüm page),
- * Plugins ▸ Summary Export ▸ Copy Summary JSON.
+ * Test için: bu dosyanın tamamını Plugins ▸ Run Script… paneline yapıştırıp
+ * en alta `onRun()` satırı ekleyerek çalıştırabilirsin — hata varsa orada görünür.
  */
-
-var sketch = require('sketch')
-var UI = require('sketch/ui')
 
 var TOL = 3 // px toleransı: geometrik fallback'te overlap / hizalama / gap kontrolleri
 
-function onCopy() { safeRun('clipboard') }
-function onSave() { safeRun('file') }
+function onRun(context) { main(context, 'clipboard') }
+function onSave(context) { main(context, 'file') }
 
-function safeRun(dest) {
+function main(context, dest) {
+  var stage = 'başlangıç'
   try {
-    run(dest)
+    log('start dest=' + dest)
+
+    stage = "require('sketch')"
+    var sketch = require('sketch')
+    var UI = require('sketch/ui')
+
+    stage = 'doküman'
+    var doc = sketch.getSelectedDocument()
+    if (!doc) { UI.message('Açık doküman yok'); return }
+
+    stage = 'color variable haritası'
+    var ctx = { doc: doc, swatches: buildSwatchMap(doc) }
+
+    stage = 'seçim'
+    var targets = doc.selectedLayers ? doc.selectedLayers.layers : []
+    if (!targets || targets.length === 0) targets = [doc.selectedPage]
+    log('hedef sayısı=' + targets.length + ' ilk tip=' + (targets[0] ? targets[0].type : '?'))
+
+    stage = 'özetleme'
+    var out = []
+    targets.forEach(function (l) {
+      var s = summarize(l, ctx)
+      if (s) out.push(s)
+    })
+    var result = out.length === 1 ? out[0] : out
+    var json = JSON.stringify(result, null, 1)
+    log('json uzunluğu=' + json.length)
+
+    if (dest === 'file') {
+      stage = 'dosyaya kaydetme'
+      var panel = NSSavePanel.savePanel()
+      panel.setNameFieldStringValue(safeName(targets[0]) + '.summary.json')
+      if (panel.runModal() == NSModalResponseOK) {
+        NSString.stringWithString(json)
+          .writeToFile_atomically_encoding_error(panel.URL().path(), true, NSUTF8StringEncoding, null)
+        UI.message('Kaydedildi: ' + panel.URL().path())
+      }
+    } else {
+      stage = 'panoya kopyalama'
+      var pb = NSPasteboard.generalPasteboard()
+      pb.clearContents()
+      pb.setString_forType(json, NSPasteboardTypeString)
+      UI.message('Özet JSON panoya kopyalandı — ' + Math.round(json.length / 102.4) / 10 + ' KB')
+    }
+    log('bitti')
   } catch (e) {
-    UI.alert('Summary Export hatası', String(e) + '\n' + (e && e.stack ? e.stack : ''))
+    reportError(context, stage, e)
   }
 }
 
-function run(dest) {
-  var doc = sketch.getSelectedDocument()
-  if (!doc) { UI.message('Açık doküman yok'); return }
+/* Hata asla sessiz kalmasın: UI.alert → NSAlert → showMessage zinciri */
+function reportError(context, stage, e) {
+  var msg = 'Aşama: ' + stage + '\n' + String(e) + (e && e.stack ? '\n\n' + e.stack : '')
+  log('HATA ' + msg)
+  try {
+    var UI = require('sketch/ui')
+    UI.alert('Summary Export hatası', msg)
+    return
+  } catch (ignore) {}
+  try {
+    var alert = NSAlert.alloc().init()
+    alert.setMessageText('Summary Export hatası')
+    alert.setInformativeText(msg)
+    alert.runModal()
+    return
+  } catch (ignore) {}
+  try {
+    context.document.showMessage('Summary Export hatası: ' + String(e))
+  } catch (ignore) {}
+}
 
-  var ctx = { doc: doc, swatches: buildSwatchMap(doc) }
-
-  var targets = doc.selectedLayers ? doc.selectedLayers.layers : []
-  if (!targets || targets.length === 0) targets = [doc.selectedPage]
-
-  var out = []
-  targets.forEach(function (l) {
-    var s = summarize(l, ctx)
-    if (s) out.push(s)
-  })
-  var result = out.length === 1 ? out[0] : out
-  var json = JSON.stringify(result, null, 1)
-
-  if (dest === 'file') {
-    var panel = NSSavePanel.savePanel()
-    panel.setNameFieldStringValue(safeName(targets[0]) + '.summary.json')
-    if (panel.runModal() == NSModalResponseOK) {
-      NSString.stringWithString(json)
-        .writeToFile_atomically_encoding_error(panel.URL().path(), true, NSUTF8StringEncoding, null)
-      UI.message('Kaydedildi: ' + panel.URL().path())
-    }
-  } else {
-    var pb = NSPasteboard.generalPasteboard()
-    pb.clearContents()
-    pb.setString_forType(json, NSPasteboardTypeString)
-    UI.message('Özet JSON panoya kopyalandı — ' + Math.round(json.length / 102.4) / 10 + ' KB')
-  }
+function log(s) {
+  try { console.log('[summary-export] ' + s) } catch (ignore) {}
 }
 
 function safeName(layer) {
-  try { return String(layer.name).replace(/[\/:]/g, '-') } catch (e) { return 'summary' }
+  try {
+    return String(layer.name).split('/').join('-').split(':').join('-')
+  } catch (e) { return 'summary' }
 }
 
 /* ---------- özetleyiciler ---------- */

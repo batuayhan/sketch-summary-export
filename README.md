@@ -65,7 +65,24 @@ yeni Swatch API'leri kullanılır (eski sürümler için geometrik fallback koru
 - Stack olmayan container'larda layout geometriden çıkarılır (3px tolerans).
   Üst üste binen serbest yerleşimlerde `layout: "absolute"` döner, frame'ler
   zaten her düğümde var.
-- Bir hata olursa artık sessizce yutulmaz: hata mesajı + stack trace alert
-  olarak gösterilir.
+- Bir hata olursa artık sessizce yutulmaz: hata mesajı + hangi aşamada olduğu +
+  stack trace alert olarak gösterilir.
+
+## Sorun giderme
+
+Menüden basınca hiçbir şey olmuyorsa plugin log'una bak:
+
+```sh
+tail -f ~/Library/Logs/com.bohemiancoding.sketch3/"Plugin Log.log"
+```
+
+Plugin her adımı `[summary-export]` etiketiyle loglar; script yüklenirken oluşan
+hatalar da (menüye hiç ulaşmadan patlayanlar) bu dosyaya düşer. Aynı log'ları
+Console.app'te "sketch" filtresiyle de görebilirsin.
+
+Hızlı test: `summary.js` içeriğini Plugins ▸ Run Script… paneline yapıştır, en
+alta `onRun()` yaz, çalıştır — hata varsa panelde görünür.
+
+Manifest değişikliklerinden sonra Sketch'i yeniden başlatmak gerekir.
 - Script'i düzenledikten sonra Sketch'te tekrar çalıştırman yeterli; menü/manifest
   değişikliği için Sketch'i yeniden başlat.
