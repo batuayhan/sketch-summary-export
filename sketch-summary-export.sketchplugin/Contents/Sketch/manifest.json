@@ -1,8 +1,8 @@
 {
   "name": "Summary Export",
   "identifier": "com.batu.sketch-summary-export",
-  "version": "1.0.0",
-  "description": "Seçili page/frame'in bileşen + layout özet JSON'ını üretir (LLM-dostu, küçük çıktı)",
+  "version": "2.0.0",
+  "description": "Seçili page/frame'in bileşen + layout özet JSON'ını üretir (LLM-dostu, küçük çıktı). Sketch 2025.1+ Frames & Stacks destekli.",
   "author": "Batu",
   "authorEmail": "batuhanayhan98@gmail.com",
   "compatibleVersion": "3",

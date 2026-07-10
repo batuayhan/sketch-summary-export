@@ -1,22 +1,34 @@
 /* Summary Export — seçili page/frame'in LLM-dostu özet JSON'ı.
+ * Sketch 2025.1 "Athens" ve sonrası (Frames, Stacks, yeni Swatch API) hedeflenir.
  *
  * Ne üretir:
  *  - Symbol instance'lar: bileşen adı, isimden ayrıştırılan proplar (key=value),
- *    default olmayan override'lar (metin, swap, stil), frame. İç yapısına GİRMEZ.
- *  - Container'lar (artboard/group): flexbox çıkarımı — row/column, gap, padding, align.
- *  - Shape/Text: color token (document color variable eşleşmesi) veya hex, shared style adı.
+ *    default olmayan override'lar (metin, swap, stil), tint. İç yapısına GİRMEZ.
+ *  - Container'lar (Frame/Graphic/Group): Stack Layout varsa GERÇEK layout
+ *    (direction/gap/padding/align/justify) doğrudan API'den okunur; yoksa
+ *    geometriden flexbox çıkarımı yapılır.
+ *  - Shape/Text: color token (fill.swatch / textSwatch color variable adı,
+ *    yoksa hex), shared style adı, corner radius.
  *
- * Kullanım: bir artboard/frame seç (ya da hiçbir şey seçme = tüm page),
+ * Kullanım: bir frame seç (ya da hiçbir şey seçme = tüm page),
  * Plugins ▸ Summary Export ▸ Copy Summary JSON.
  */
 
 var sketch = require('sketch')
 var UI = require('sketch/ui')
 
-var TOL = 3 // px toleransı: overlap / hizalama / gap eşitliği kontrolleri
+var TOL = 3 // px toleransı: geometrik fallback'te overlap / hizalama / gap kontrolleri
 
-function onCopy() { run('clipboard') }
-function onSave() { run('file') }
+function onCopy() { safeRun('clipboard') }
+function onSave() { safeRun('file') }
+
+function safeRun(dest) {
+  try {
+    run(dest)
+  } catch (e) {
+    UI.alert('Summary Export hatası', String(e) + '\n' + (e && e.stack ? e.stack : ''))
+  }
+}
 
 function run(dest) {
   var doc = sketch.getSelectedDocument()
@@ -58,20 +70,35 @@ function safeName(layer) {
 /* ---------- özetleyiciler ---------- */
 
 function summarize(layer, ctx) {
+  var node = null
   try {
     if (!layer || layer.hidden) return null
     switch (layer.type) {
-      case 'Page': return summarizePage(layer, ctx)
-      case 'Artboard':
-      case 'SymbolMaster': return summarizeContainer(layer, ctx, true)
-      case 'Group': return summarizeContainer(layer, ctx, false)
-      case 'SymbolInstance': return summarizeInstance(layer, ctx)
-      case 'Text': return summarizeText(layer, ctx)
+      case 'Page':
+        return summarizePage(layer, ctx)
+      case 'Artboard': // yeni Sketch'te top-level Frame/Graphic da 'Artboard' döner
+      case 'SymbolMaster':
+      case 'Group':
+        node = summarizeContainer(layer, ctx)
+        break
+      case 'SymbolInstance':
+        node = summarizeInstance(layer, ctx)
+        break
+      case 'Text':
+        node = summarizeText(layer, ctx)
+        break
       case 'Shape':
-      case 'ShapePath': return summarizeShape(layer, ctx)
-      case 'Image': return { type: 'image', name: String(layer.name), frame: frameOf(layer) }
-      default: return null // HotSpot, Slice vs.
+      case 'ShapePath':
+        node = summarizeShape(layer, ctx)
+        break
+      case 'Image':
+        node = { type: 'image', name: String(layer.name), frame: frameOf(layer) }
+        break
+      default:
+        return null // HotSpot, Slice vs.
     }
+    if (node) addStackItemInfo(node, layer)
+    return node
   } catch (e) {
     return { type: 'error', name: layer ? String(layer.name) : '?', error: String(e) }
   }
@@ -86,26 +113,79 @@ function summarizePage(page, ctx) {
   return { type: 'page', name: String(page.name), children: kids }
 }
 
-function summarizeContainer(layer, ctx, isArtboard) {
+function summarizeContainer(layer, ctx) {
   var kids = []
   layer.layers.forEach(function (ch) {
     var s = summarize(ch, ctx)
     if (s) kids.push(s)
   })
-  var node = {
-    type: isArtboard ? 'frame' : 'group',
-    name: String(layer.name),
-    frame: frameOf(layer)
+  var node = { type: containerKind(layer), name: String(layer.name), frame: frameOf(layer) }
+
+  var bg = containerBackground(layer, ctx)
+  if (bg) node.background = bg
+  var radius = cornersOf(layer)
+  if (radius !== undefined) node.radius = radius
+
+  var st = null
+  try { st = layer.stackLayout } catch (e) {}
+  if (st) {
+    applyStackLayout(node, st, kids)
+  } else {
+    attachLayout(node, kids, layer.frame.width, layer.frame.height)
   }
-  if (isArtboard) {
-    try {
-      if (layer.background && layer.background.enabled) {
-        node.background = token(layer.background.color, ctx)
-      }
-    } catch (e) {}
-  }
-  attachLayout(node, kids, layer.frame.width, layer.frame.height)
   return node
+}
+
+// Gerçek Stack Layout verisi — tahmin yok
+function applyStackLayout(node, st, kids) {
+  node.layout = String(st.direction) === 'Row' ? 'row' : 'column'
+  try { if (typeof st.gap === 'number') node.gap = st.gap } catch (e) {}
+  var pad = normPadding(st.padding)
+  if (pad) node.padding = pad
+  try { if (st.alignItems) node.align = cssEnum(st.alignItems) } catch (e) {}
+  try { if (st.justifyContent) node.justify = cssEnum(st.justifyContent) } catch (e) {}
+  try {
+    if (st.wraps) {
+      node.wrap = true
+      if (st.crossAxisGap) node.crossAxisGap = st.crossAxisGap
+      if (st.alignContent) node.alignContent = cssEnum(st.alignContent)
+    }
+  } catch (e) {}
+  // çocukları ana eksene göre görsel sıraya diz
+  var pos = node.layout === 'row' ? 'x' : 'y'
+  var framed = kids.filter(function (k) { return k.frame })
+  var rest = kids.filter(function (k) { return !k.frame })
+  framed.sort(function (a, b) { return a.frame[pos] - b.frame[pos] })
+  node.children = framed.concat(rest)
+}
+
+function containerKind(layer) {
+  try { if (layer.isGraphicFrame) return 'graphic' } catch (e) {}
+  try { if (layer.isFrame) return 'frame' } catch (e) {}
+  try {
+    var GB = require('sketch/dom').GroupBehavior
+    if (GB) {
+      if (layer.groupBehavior === GB.Frame) return 'frame'
+      if (GB.Graphic !== undefined && layer.groupBehavior === GB.Graphic) return 'graphic'
+    }
+  } catch (e) {}
+  if (layer.type === 'Artboard' || layer.type === 'SymbolMaster') return 'frame'
+  return 'group'
+}
+
+// Frame arka planı artık style.fills; legacy Artboard.background fallback
+function containerBackground(layer, ctx) {
+  try {
+    var fills = layer.style && layer.style.fills
+    if (fills && fills.length) {
+      var on = fills.filter(function (f) { return f.enabled !== false && String(f.fillType) === 'Color' })
+      if (on.length) return fillToken(on[on.length - 1], ctx)
+    }
+  } catch (e) {}
+  try {
+    if (layer.background && layer.background.enabled) return token(layer.background.color, ctx)
+  } catch (e) {}
+  return undefined
 }
 
 function summarizeInstance(layer, ctx) {
@@ -149,14 +229,19 @@ function summarizeInstance(layer, ctx) {
   } catch (e) {}
   if (hasOv) node.overrides = ovs
 
-  // instance üstüne uygulanmış tint
+  // instance üstüne uygulanmış tint (yeni API: style.tint bir Fill objesi)
   try {
-    var fills = layer.style && layer.style.fills
-    if (fills && fills.length) {
-      var on = fills.filter(function (f) { return f.enabled !== false && f.fillType === 'Color' })
-      if (on.length) node.tint = token(on[on.length - 1].color, ctx)
-    }
+    if (layer.style && layer.style.tint) node.tint = fillToken(layer.style.tint, ctx)
   } catch (e) {}
+  if (!node.tint) {
+    try {
+      var fills = layer.style && layer.style.fills
+      if (fills && fills.length) {
+        var on = fills.filter(function (f) { return f.enabled !== false && String(f.fillType) === 'Color' })
+        if (on.length) node.tint = fillToken(on[on.length - 1], ctx)
+      }
+    } catch (e) {}
+  }
 
   return node
 }
@@ -168,7 +253,8 @@ function summarizeText(layer, ctx) {
     var st = layer.style
     if (st) {
       if (!node.textStyle) node.font = { size: st.fontSize, weight: st.fontWeight }
-      if (st.textColor) node.color = token(st.textColor, ctx)
+      if (st.textSwatch && st.textSwatch.name) node.color = String(st.textSwatch.name)
+      else if (st.textColor) node.color = token(st.textColor, ctx)
     }
   } catch (e) {}
   return node
@@ -180,25 +266,36 @@ function summarizeShape(layer, ctx) {
   try {
     var st = layer.style
     if (st) {
-      var fills = (st.fills || []).filter(function (f) { return f.enabled !== false && f.fillType === 'Color' })
-      if (fills.length) node.fill = token(fills[fills.length - 1].color, ctx)
-      var borders = (st.borders || []).filter(function (b) { return b.enabled !== false && b.fillType === 'Color' })
+      var fills = (st.fills || []).filter(function (f) { return f.enabled !== false && String(f.fillType) === 'Color' })
+      if (fills.length) node.fill = fillToken(fills[fills.length - 1], ctx)
+      var borders = (st.borders || []).filter(function (b) { return b.enabled !== false && String(b.fillType) === 'Color' })
       if (borders.length) {
         var b = borders[borders.length - 1]
-        node.border = { color: token(b.color, ctx), width: b.thickness }
+        node.border = { color: fillToken(b, ctx), width: b.thickness }
       }
     }
   } catch (e) {}
-  try {
-    if (layer.type === 'ShapePath' && layer.points && layer.points.length) {
-      var r = layer.points[0].cornerRadius
-      if (r) node.radius = r
-    }
-  } catch (e) {}
+  var radius = cornersOf(layer)
+  if (radius !== undefined) node.radius = radius
   return node
 }
 
-/* ---------- layout çıkarımı (flexbox) ---------- */
+/* ---------- stack item bilgisi (FlexSizing / ignoresStackLayout) ---------- */
+
+function addStackItemInfo(node, layer) {
+  try {
+    var h = layer.horizontalSizing
+    var v = layer.verticalSizing
+    var sizing = {}
+    var has = false
+    if (h && String(h) !== 'Fixed') { sizing.w = String(h).toLowerCase(); has = true }
+    if (v && String(v) !== 'Fixed') { sizing.h = String(v).toLowerCase(); has = true }
+    if (has) node.sizing = sizing
+  } catch (e) {}
+  try { if (layer.ignoresStackLayout) node.ignoresLayout = true } catch (e) {}
+}
+
+/* ---------- layout çıkarımı: stack olmayan container'lar için fallback ---------- */
 
 function attachLayout(node, kids, w, h) {
   node.children = kids
@@ -239,6 +336,7 @@ function attachLayout(node, kids, w, h) {
   } else {
     node.layout = 'absolute' // üst üste / serbest yerleşim; frame'ler zaten mevcut
   }
+  node.layoutSource = 'inferred' // gerçek Stack değil, geometriden tahmin
 }
 
 // sıralı çocuklar ana eksende üst üste binmiyor mu?
@@ -295,7 +393,33 @@ function frameOf(layer) {
   return { x: Math.round(f.x), y: Math.round(f.y), w: Math.round(f.width), h: Math.round(f.height) }
 }
 
-// "Button/Primary, Size=lg, State=hover" -> component + props
+// StackLayout.padding: sayı | {vertical, horizontal} | {top,right,bottom,left} karışımı
+function normPadding(p) {
+  if (p === null || p === undefined) return undefined
+  if (typeof p === 'number') return { top: p, right: p, bottom: p, left: p }
+  function edge(individual, axis) {
+    if (typeof individual === 'number') return individual
+    if (typeof axis === 'number') return axis
+    return 0
+  }
+  return {
+    top: edge(p.top, p.vertical),
+    right: edge(p.right, p.horizontal),
+    bottom: edge(p.bottom, p.vertical),
+    left: edge(p.left, p.horizontal)
+  }
+}
+
+// Sketch enum adları → CSS karşılıkları
+function cssEnum(v) {
+  var s = String(v).toLowerCase()
+  if (s === 'between') return 'space-between'
+  if (s === 'around') return 'space-around'
+  if (s === 'evenly') return 'space-evenly'
+  return s // start, center, end, stretch, none
+}
+
+// "Kit/Button, Size=lg, State=hover" -> component + props
 function parseComponentName(name) {
   var segs = String(name).split(',')
   var base = [segs[0]]
@@ -313,7 +437,41 @@ function parseComponentName(name) {
   return { component: base.join(', ').trim(), props: props }
 }
 
-// document color variable'ları (kütüphaneden gelenler dahil) hex -> token adı
+// Yeni corners API'si (style.corners.radii); eski points fallback'i
+function cornersOf(layer) {
+  try {
+    var c = layer.style && layer.style.corners
+    if (c && c.radii !== undefined && c.radii !== null) {
+      if (typeof c.radii === 'number') return c.radii || undefined
+      if (c.radii.length) {
+        var first = c.radii[0]
+        var uniform = true
+        for (var i = 1; i < c.radii.length; i++) {
+          if (c.radii[i] !== first) { uniform = false; break }
+        }
+        var val = uniform ? first : Array.prototype.slice.call(c.radii)
+        return val || undefined
+      }
+    }
+  } catch (e) {}
+  try {
+    if (layer.type === 'ShapePath' && layer.points && layer.points.length) {
+      var r = layer.points[0].cornerRadius
+      if (r) return r
+    }
+  } catch (e) {}
+  return undefined
+}
+
+// Fill/Border: önce bağlı color variable (swatch), yoksa hex-map, yoksa hex
+function fillToken(f, ctx) {
+  try {
+    if (f.swatch && f.swatch.name) return String(f.swatch.name)
+  } catch (e) {}
+  return token(f.color, ctx)
+}
+
+// dokümandaki color variable'lar (kütüphaneden gelenler dahil) hex -> token adı
 function buildSwatchMap(doc) {
   var map = {}
   try {

@@ -13,20 +13,32 @@ JSON'unun aksine bileşen içlerine girmez — kit'ten gelen bileşen bir kara k
 2. **Plugins ▸ Summary Export ▸ Copy Summary JSON** (`⌃⌥⌘J`) → panoya kopyalar.
    Dosya olarak istersen **Save Summary JSON…** (`⌃⌥⌘⇧J`).
 
+Sketch **2025.1 "Athens" ve sonrası** hedeflenir: Frames/Graphics, Stack Layout ve
+yeni Swatch API'leri kullanılır (eski sürümler için geometrik fallback korunur).
+
 ## Çıktıda ne var
 
 - **`component`** düğümleri (symbol instance): master adı, isimden ayrıştırılan
   proplar (`Size=lg` gibi `key=value` segmentleri), default olmayan override'lar
   (metin içerikleri, symbol swap'leri, stil değişimleri), tint. **İç yapısı yok.**
-- **`frame` / `group`** düğümleri: flexbox çıkarımı —
-  - `layout`: `column` | `row` | `absolute`
-  - `gap`: çocuklar arası boşluk (eşitse tek sayı, değilse dizi)
-  - `padding`: `{top, right, bottom, left}` container kenarlarından
-  - `align`: çapraz eksen hizası (`start`/`center`/`end`/`mixed`)
-  - `column`/`row` durumunda çocuklar görsel sıraya göre dizilir.
-- **`shape`** (Paper/Box gibi ham kutular): `fill`/`border` **color token adı**
-  (document color variable eşleşirse; yoksa hex), `radius`, shared style adı.
-- **`text`**: içerik, text style adı (yoksa font size/weight), renk tokenı.
+- **`frame` / `graphic` / `group`** düğümleri:
+  - Container bir **Stack** ise layout doğrudan API'den okunur (tahmin yok):
+    `layout` (`row`/`column`), `gap`, `padding`, `align` (align-items),
+    `justify` (justify-content, CSS adlarıyla: `space-between` vb.),
+    `wrap`/`crossAxisGap` (sarmalı stack'lerde).
+  - Stack değilse geometriden flexbox çıkarımı yapılır ve `layoutSource:
+    "inferred"` işaretlenir: `layout` (`column`/`row`/`absolute`), `gap`
+    (eşitse tek sayı, değilse dizi), `padding`, `align`.
+  - Her iki durumda da çocuklar görsel sıraya göre dizilir.
+  - Stack içindeki çocuklarda `sizing: {w/h: "fill"|"fit"|"relative"}` ve
+    `ignoresLayout` (stack'i yok sayan absolute eleman) bilgisi bulunur.
+- **`shape`** (Paper/Box gibi ham kutular): `fill`/`border` **color token adı** —
+  önce fill'e bağlı color variable (`fill.swatch`), yoksa hex üzerinden doküman
+  color variable eşleşmesi, o da yoksa hex. `radius` (yeni `style.corners`
+  API'sinden), shared style adı.
+- **`text`**: içerik, text style adı (yoksa font size/weight), renk tokenı
+  (`textSwatch` color variable adı öncelikli).
+- Frame arka planları yeni modele göre `style.fills` üzerinden okunur.
 - Gizli layer'lar, hotspot/slice'lar atlanır.
 
 ## Örnek çıktı
@@ -50,9 +62,10 @@ JSON'unun aksine bileşen içlerine girmez — kit'ten gelen bileşen bir kara k
 
 ## Notlar
 
-- Layout çıkarımı geometriden yapılır (3px tolerans). Üst üste binen serbest
-  yerleşimlerde `layout: "absolute"` döner, frame'ler zaten her düğümde var.
-- Color token eşleşmesi dokümandaki (kütüphaneden gelenler dahil) color
-  variable'ların hex değerleri üzerinden yapılır.
+- Stack olmayan container'larda layout geometriden çıkarılır (3px tolerans).
+  Üst üste binen serbest yerleşimlerde `layout: "absolute"` döner, frame'ler
+  zaten her düğümde var.
+- Bir hata olursa artık sessizce yutulmaz: hata mesajı + stack trace alert
+  olarak gösterilir.
 - Script'i düzenledikten sonra Sketch'te tekrar çalıştırman yeterli; menü/manifest
   değişikliği için Sketch'i yeniden başlat.
